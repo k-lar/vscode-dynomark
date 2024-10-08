@@ -1,0 +1,168 @@
+import * as path from 'path';
+import * as vscode from 'vscode';
+const { exec } = require('child_process');
+
+class DynomarkContentProvider implements vscode.TextDocumentContentProvider {
+    private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
+    private content: string = '';
+
+    get onDidChange(): vscode.Event<vscode.Uri> {
+        return this._onDidChange.event;
+    }
+
+    provideTextDocumentContent(uri: vscode.Uri): string {
+        return this.content;
+    }
+
+    updateContent(newContent: string) {
+        this.content = newContent;
+        this._onDidChange.fire(vscode.Uri.parse('dynomark-results:results.md'));
+    }
+}
+
+export function activate(context: vscode.ExtensionContext) {
+    let disposableRunBlock = vscode.commands.registerCommand('vscode-dynomark.runDynomarkBlock', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showInformationMessage('No editor is active');
+            return;
+        }
+        const document = editor.document;
+        const selection = editor.selection;
+        const cursorPosition = editor.selection.active;
+        const text = document.getText();
+
+        // Determine the command to check for dynomark
+        const checkCommand = process.platform === 'win32' ? 'where dynomark' : 'which dynomark';
+
+        // Check if dynomark is available
+        exec(checkCommand, (error: any, stdout: string, stderr: string) => {
+            if (error) {
+                vscode.window.showErrorMessage('Dynomark is not available on this system.', 'Download Dynomark').then(selection => {
+                    if (selection === 'Download Dynomark') {
+                        vscode.env.openExternal(vscode.Uri.parse('https://github.com/k-lar/dynomark/releases'));
+                    }
+                });
+                return;
+            }
+        });
+    
+        // Find the dynomark block where the cursor is located
+        const { content: dynomarkBlock, endPosition } = findDynomarkBlockAtPosition(text, cursorPosition);
+    
+        if (!dynomarkBlock) {
+            vscode.window.showInformationMessage('Cursor is not inside a dynomark code block.');
+            return;
+        }
+    
+        const provider = new DynomarkContentProvider();
+        vscode.workspace.registerTextDocumentContentProvider('dynomark-results', provider);
+
+        const currentFileDirectory = path.dirname(document.fileName);
+        const command = `echo '${dynomarkBlock}' | dynomark`;
+    
+        exec(command, { cwd: currentFileDirectory }, (error: { message: any; }, stdout: any, stderr: any) => {
+            if (error) {
+                vscode.window.showErrorMessage(`Error running command: ${error.message}`);
+                return;
+            }
+            if (stderr) {
+                vscode.window.showWarningMessage(`stderr: ${stderr}`);
+            }
+
+            provider.updateContent(stdout);
+
+            const virtualDocUri = vscode.Uri.parse('dynomark-results:results.md');
+            if (endPosition) {
+                vscode.commands.executeCommand('editor.action.peekLocations', editor.document.uri, endPosition, [
+                    new vscode.Location(virtualDocUri, new vscode.Position(0, 0))
+                ]).then(() => {
+                    console.log('Peek command executed.');
+                }, (err) => {
+                    vscode.window.showErrorMessage(`Error executing peek command: ${err}`);
+                });
+            } else {
+                vscode.window.showErrorMessage('End position is undefined.');
+            }
+        });
+    });
+
+    vscode.languages.registerCodeActionsProvider('markdown', {
+        provideCodeActions(document, range, context, token) {
+            const markdownText = document.getText();
+            const regex = /```dynomark([\s\S]*?)```/g;
+
+            // FIXME: Yeah this doesn't work. Context menu item is always available, even when the cursor is not inside a dynomark block.
+            let match;
+            while ((match = regex.exec(markdownText)) !== null) {
+                const blockStartIndex = match.index;
+                const blockEndIndex = regex.lastIndex;
+
+                const startLine = markdownText.slice(0, blockStartIndex).split('\n').length - 1;
+                const endLine = markdownText.slice(0, blockEndIndex).split('\n').length - 1;
+
+                if (range.start.line >= startLine && range.end.line <= endLine) {
+                    return [
+                        {
+                            title: 'Run block with dynomark',
+                            command: 'vscode-dynomark.runDynomarkBlock'
+                        }
+                    ];
+                }
+            }
+
+            return [];
+        }
+    });
+
+    context.subscriptions.push(disposableRunBlock);
+}
+
+/**
+ * Extracts all code blocks with the language identifier 'dynomark' from the given Markdown text.
+ * @param markdownText The text content of the Markdown document.
+ * @returns An array of strings, each representing the content inside a 'dynomark' code block.
+ */
+function extractDynomarkCodeBlocks(markdownText: string): string[] {
+    const dynomarkBlocks: string[] = [];
+    const regex = /```dynomark\s*\n([\s\S]*?)\n```/g;
+    let match;
+    while ((match = regex.exec(markdownText)) !== null) {
+        dynomarkBlocks.push(match[1].trim());
+    }
+    return dynomarkBlocks;
+}
+
+/**
+ * Finds the dynomark code block at the given cursor position.
+ * @param markdownText The full text of the markdown document.
+ * @param position The cursor position (vscode.Position).
+ * @returns The content inside the dynomark block if found and the end position of the block if found.
+ */
+function findDynomarkBlockAtPosition(markdownText: string, position: vscode.Position): { content: string | null, endPosition: vscode.Position | null } {
+    const regex = /```dynomark\s*\n([\s\S]*?)\n```/g;
+    let match;
+    let blockStart = 0;
+
+    // Search for dynomark code blocks
+    while ((match = regex.exec(markdownText)) !== null) {
+        const blockStartIndex = match.index;
+        const blockEndIndex = regex.lastIndex;
+
+        // Get the start and end line numbers of the code block
+        const startLine = markdownText.slice(0, blockStartIndex).split('\n').length - 1;
+        const endLine = markdownText.slice(0, blockEndIndex).split('\n').length - 1;
+
+        // Check if the cursor is inside the block
+        if (position.line >= startLine && position.line <= endLine) {
+            return {
+                content: match[1].trim(),
+                endPosition: new vscode.Position(endLine, 0)
+            };
+        }
+    }
+
+    return { content: null, endPosition: null };  // Return null if no block found
+}
+
+export function deactivate() {}
