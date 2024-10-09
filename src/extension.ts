@@ -68,7 +68,8 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.workspace.registerTextDocumentContentProvider('dynomark-results', provider);
 
             const currentFileDirectory = path.dirname(document.fileName);
-            const command = `${dynomarkPath} --query '${dynomarkBlock}'`;
+            const query = dynomarkBlock.replace(/"/g, '\\"'); // Escape double quotes
+            const command = `${dynomarkPath} --query "${query}"`;
 
             exec(command, { cwd: currentFileDirectory }, (error: { message: any; }, stdout: any, stderr: any) => {
                 if (error) {
@@ -123,7 +124,8 @@ export function activate(context: vscode.ExtensionContext) {
             let modifiedText = text;
             let promises = dynomarkBlocks.map(block => {
                 return new Promise<void>((resolve, reject) => {
-                    const command = `${dynomarkPath} --query '${block}'`;
+                    const query = block.replace(/"/g, '\\"'); // Escape double quotes
+                    const command = `${dynomarkPath} --query "${query}"`;
                     exec(command, (error: { message: any; }, stdout: any, stderr: any) => {
                         if (error) {
                             reject(`Error running command: ${error.message}`);
