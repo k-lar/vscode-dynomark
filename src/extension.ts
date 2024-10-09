@@ -40,7 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (error) {
                 vscode.window.showErrorMessage('Dynomark is not available on this system.', 'Download Dynomark').then(selection => {
                     if (selection === 'Download Dynomark') {
-                        vscode.env.openExternal(vscode.Uri.parse('https://github.com/k-lar/dynomark/releases'));
+                        vscode.env.openExternal(vscode.Uri.parse('https://github.com/k-lar/dynomark/releases/latest'));
                     }
                 });
                 return;
@@ -59,7 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.workspace.registerTextDocumentContentProvider('dynomark-results', provider);
 
         const currentFileDirectory = path.dirname(document.fileName);
-        const command = `echo '${dynomarkBlock}' | dynomark`;
+        const command = `dynomark --query '${dynomarkBlock}'`;
     
         exec(command, { cwd: currentFileDirectory }, (error: { message: any; }, stdout: any, stderr: any) => {
             if (error) {
@@ -70,7 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showWarningMessage(`stderr: ${stderr}`);
             }
 
-            provider.updateContent(stdout);
+            provider.updateContent(stdout.trim());
 
             const virtualDocUri = vscode.Uri.parse('dynomark-results:results.md');
             if (endPosition) {
@@ -115,6 +115,62 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    let disposableCompileDocument = vscode.commands.registerCommand('vscode-dynomark.compileDocument', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showInformationMessage('No editor is active');
+            return;
+        }
+        const document = editor.document;
+        const text = document.getText();
+
+        // Determine the command to check for dynomark
+        const checkCommand = process.platform === 'win32' ? 'where dynomark' : 'which dynomark';
+
+        // Check if dynomark is available
+        exec(checkCommand, (error: any, stdout: string, stderr: string) => {
+            if (error) {
+                vscode.window.showErrorMessage('Dynomark is not available on this system.', 'Download Dynomark').then(selection => {
+                    if (selection === 'Download Dynomark') {
+                        vscode.env.openExternal(vscode.Uri.parse('https://github.com/k-lar/dynomark/releases/latest'));
+                    }
+                });
+                return;
+            }
+
+            // Extract all dynomark blocks
+            const dynomarkBlocks = extractDynomarkCodeBlocks(text);
+            let modifiedText = text;
+            let promises = dynomarkBlocks.map(block => {
+                return new Promise<void>((resolve, reject) => {
+                    const command = `dynomark --query '${block}'`;
+                    const currentFileDirectory = path.dirname(document.fileName);
+                    exec(command, { cwd: currentFileDirectory }, (error: { message: any; }, stdout: any, stderr: any) => {
+                        if (error) {
+                            reject(`Error running command: ${error.message}`);
+                            return;
+                        }
+                        if (stderr) {
+                            vscode.window.showWarningMessage(`stderr: ${stderr}`);
+                        }
+                        modifiedText = modifiedText.replace(`\`\`\`dynomark\n${block}\n\`\`\``, stdout.trim());
+                        resolve();
+                    });
+                });
+            });
+
+            Promise.all(promises).then(() => {
+                // Create a new document with the modified content
+                vscode.workspace.openTextDocument({ content: modifiedText, language: 'markdown' }).then(doc => {
+                    vscode.window.showTextDocument(doc);
+                });
+            }).catch(err => {
+                vscode.window.showErrorMessage(err);
+            });
+        });
+    });
+
+    context.subscriptions.push(disposableCompileDocument);
     context.subscriptions.push(disposableRunBlock);
 }
 

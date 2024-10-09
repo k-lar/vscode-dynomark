@@ -15,7 +15,11 @@
     "commands": [
       {
         "command": "vscode-dynomark.runDynomarkBlock",
-        "title": "Dynomark: Run Dynomark Block under cursor"
+        "title": "Dynomark: Run Dynomark block under cursor"
+      },
+      {
+        "command": "vscode-dynomark.compileDocument",
+        "title": "Dynomark: Compile document with Dynomark blocks"
       }
     ],
     "menus": {
