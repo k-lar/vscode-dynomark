@@ -124,9 +124,10 @@ export function activate(context: vscode.ExtensionContext) {
             let modifiedText = text;
             let promises = dynomarkBlocks.map(block => {
                 return new Promise<void>((resolve, reject) => {
+                    const currentFileDirectory = path.dirname(document.fileName);
                     const query = block.replace(/"/g, '\\"'); // Escape double quotes
                     const command = `${dynomarkPath} --query "${query}"`;
-                    exec(command, (error: { message: any; }, stdout: any, stderr: any) => {
+                    exec(command, { cwd: currentFileDirectory },(error: { message: any; }, stdout: any, stderr: any) => {
                         if (error) {
                             reject(`Error running command: ${error.message}`);
                             return;
