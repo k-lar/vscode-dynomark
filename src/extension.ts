@@ -44,7 +44,7 @@ class DynomarkContentProvider implements vscode.TextDocumentContentProvider {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    let disposableRunBlock = vscode.commands.registerCommand('vscode-dynomark.runDynomarkBlock', () => {
+    let disposableRunBlock = vscode.commands.registerCommand('vscode-dynomark.runDynomarkBlock', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             vscode.window.showInformationMessage('No editor is active');
@@ -55,8 +55,8 @@ export function activate(context: vscode.ExtensionContext) {
         const cursorPosition = editor.selection.active;
         const text = document.getText();
 
-        checkDynomarkAvailability().then(dynomarkPath => {
-            // Find the dynomark block where the cursor is located
+        try {
+            const dynomarkPath = await checkDynomarkAvailability();
             const { content: dynomarkBlock, endPosition } = findDynomarkBlockAtPosition(text, cursorPosition);
 
             if (!dynomarkBlock) {
@@ -69,33 +69,24 @@ export function activate(context: vscode.ExtensionContext) {
 
             const currentFileDirectory = path.dirname(document.fileName);
             const query = dynomarkBlock.replace(/"/g, '\\"'); // Escape double quotes
-            const command = `${dynomarkPath} --query "${query}"`;
 
-            exec(command, { cwd: currentFileDirectory }, (error: { message: any; }, stdout: any, stderr: any) => {
-                if (error) {
-                    vscode.window.showErrorMessage(`Error running command: ${error.message}`);
-                    return;
-                }
-                if (stderr) {
-                    vscode.window.showWarningMessage(`stderr: ${stderr}`);
-                }
-
-                provider.updateContent(stdout.trim());
+            try {
+                const result = await retryDynomarkExecution(dynomarkPath, query, currentFileDirectory);
+                provider.updateContent(result);
 
                 const virtualDocUri = vscode.Uri.parse('dynomark-results:results.md');
                 if (endPosition) {
-                    vscode.commands.executeCommand('editor.action.peekLocations', editor.document.uri, endPosition, [
+                    await vscode.commands.executeCommand('editor.action.peekLocations', editor.document.uri, endPosition, [
                         new vscode.Location(virtualDocUri, new vscode.Position(0, 0))
-                    ]).then(() => {
-                        console.log('Peek command executed.');
-                    }, (err) => {
-                        vscode.window.showErrorMessage(`Error executing peek command: ${err}`);
-                    });
+                    ]);
+                    console.log('Peek command executed.');
                 } else {
                     vscode.window.showErrorMessage('End position is undefined.');
                 }
-            });
-        }).catch(() => {
+            } catch (error) {
+                vscode.window.showErrorMessage(`Error executing Dynomark command: ${error}`);
+            }
+        } catch (error) {
             vscode.window.showErrorMessage('Dynomark is not available on this system.', 'Download Dynomark').then(selection => {
                 if (selection === 'Download Dynomark') {
                     downloadDynomark().then(dynomarkPath => {
@@ -105,10 +96,10 @@ export function activate(context: vscode.ExtensionContext) {
                     });
                 }
             });
-        });
+        }
     });
 
-    let disposableCompileDocument = vscode.commands.registerCommand('vscode-dynomark.compileDocument', () => {
+    let disposableCompileDocument = vscode.commands.registerCommand('vscode-dynomark.compileDocument', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             vscode.window.showInformationMessage('No editor is active');
@@ -116,64 +107,58 @@ export function activate(context: vscode.ExtensionContext) {
         }
         const document = editor.document;
         const text = document.getText();
-
-        // Determine the command to check for dynomark
-        checkDynomarkAvailability().then(dynomarkPath => {
-            // Extract all dynomark blocks
+    
+        try {
+            const dynomarkPath = await checkDynomarkAvailability();
             const dynomarkBlocks = extractDynomarkCodeBlocks(text);
             let modifiedText = text;
-            let promises = dynomarkBlocks.map(block => {
-                return new Promise<void>((resolve, reject) => {
-                    const currentFileDirectory = path.dirname(document.fileName);
-                    const query = block.replace(/"/g, '\\"'); // Escape double quotes
-                    const command = `${dynomarkPath} --query "${query}"`;
-                    exec(command, { cwd: currentFileDirectory },(error: { message: any; }, stdout: any, stderr: any) => {
-                        if (error) {
-                            reject(`Error running command: ${error.message}`);
-                            return;
-                        }
-                        if (stderr) {
-                            vscode.window.showWarningMessage(`stderr: ${stderr}`);
-                        }
-                        modifiedText = modifiedText.replace(`\`\`\`dynomark\n${block}\n\`\`\``, stdout.trim());
-                        resolve();
-                    });
-                });
-            });
-
-            Promise.all(promises).then(() => {
-                // Create a new document with the modified content
-                vscode.workspace.openTextDocument({ content: modifiedText, language: 'markdown' }).then(doc => {
-                    vscode.window.showTextDocument(doc);
-                });
-            }).catch(err => {
-                vscode.window.showErrorMessage(err);
-            });
-        }).catch(() => {
-            vscode.window.showErrorMessage('Dynomark is not available on this system.', 'Download Dynomark').then(selection => {
-                if (selection === 'Download Dynomark') {
-                    downloadDynomark().then(dynomarkPath => {
-                        vscode.window.showInformationMessage(`Dynomark downloaded to ${dynomarkPath}`);
-                    }).catch(err => {
-                        vscode.window.showErrorMessage(`Failed to download Dynomark: ${err}`);
-                    });
+    
+            console.log(`Found ${dynomarkBlocks.length} Dynomark blocks to process`);
+    
+            for (let i = 0; i < dynomarkBlocks.length; i++) {
+                const block = dynomarkBlocks[i];
+                console.log(`Processing block ${i + 1}/${dynomarkBlocks.length}`);
+                console.log(`Block content: ${block}`);
+        
+                const currentFileDirectory = path.dirname(document.fileName);
+                const query = block.replace(/"/g, '\\"');
+                try {
+                    console.log(`Executing query: ${query}`);
+                    const result = await retryDynomarkExecution(dynomarkPath, query, currentFileDirectory);
+                    console.log(`Execution result: ${result}`);
+        
+                    const blockRegex = createSafeBlockRegex(block);
+                    const beforeReplace = modifiedText;
+                    modifiedText = modifiedText.replace(blockRegex, result);
+                    
+                    if (beforeReplace === modifiedText) {
+                        console.warn(`Block ${i + 1} was not replaced in the text. This might indicate a matching problem.`);
+                        console.log(`Regex used: ${blockRegex}`);
+                    } else {
+                        console.log(`Block ${i + 1} successfully replaced`);
+                    }
+                } catch (error) {
+                    console.error(`Error processing block ${i + 1}: ${block}`, error);
+                    vscode.window.showWarningMessage(`Failed to process Dynomark block ${i + 1}: ${error}`);
                 }
-            });
-        });
+            }
+    
+            console.log(`All blocks processed. Opening new document.`);
+            const newDoc = await vscode.workspace.openTextDocument({ content: modifiedText, language: 'markdown' });
+            await vscode.window.showTextDocument(newDoc);
+        } catch (error) {
+            console.error('Error in compileDocument:', error);
+            vscode.window.showErrorMessage(`Error compiling document: ${error}`);
+        }
     });
 
     context.subscriptions.push(disposableCompileDocument);
     context.subscriptions.push(disposableRunBlock);
 }
 
-/**
- * Extracts all code blocks with the language identifier 'dynomark' from the given Markdown text.
- * @param markdownText The text content of the Markdown document.
- * @returns An array of strings, each representing the content inside a 'dynomark' code block.
- */
 function extractDynomarkCodeBlocks(markdownText: string): string[] {
     const dynomarkBlocks: string[] = [];
-    const regex = /```dynomark\s*\n([\s\S]*?)\n```/g;
+    const regex = /```dynomark\s*\n([\s\S]*?)\n\s*```/g;
     let match;
     while ((match = regex.exec(markdownText)) !== null) {
         dynomarkBlocks.push(match[1].trim());
@@ -181,27 +166,18 @@ function extractDynomarkCodeBlocks(markdownText: string): string[] {
     return dynomarkBlocks;
 }
 
-/**
- * Finds the dynomark code block at the given cursor position.
- * @param markdownText The full text of the markdown document.
- * @param position The cursor position (vscode.Position).
- * @returns The content inside the dynomark block if found and the end position of the block if found.
- */
 function findDynomarkBlockAtPosition(markdownText: string, position: vscode.Position): { content: string | null, endPosition: vscode.Position | null } {
     const regex = /```dynomark\s*\n([\s\S]*?)\n```/g;
     let match;
     let blockStart = 0;
 
-    // Search for dynomark code blocks
     while ((match = regex.exec(markdownText)) !== null) {
         const blockStartIndex = match.index;
         const blockEndIndex = regex.lastIndex;
 
-        // Get the start and end line numbers of the code block
         const startLine = markdownText.slice(0, blockStartIndex).split('\n').length - 1;
         const endLine = markdownText.slice(0, blockEndIndex).split('\n').length - 1;
 
-        // Check if the cursor is inside the block
         if (position.line >= startLine && position.line <= endLine) {
             return {
                 content: match[1].trim(),
@@ -210,7 +186,7 @@ function findDynomarkBlockAtPosition(markdownText: string, position: vscode.Posi
         }
     }
 
-    return { content: null, endPosition: null };  // Return null if no block found
+    return { content: null, endPosition: null };
 }
 
 function checkDynomarkAvailability(): Promise<string> {
@@ -218,7 +194,6 @@ function checkDynomarkAvailability(): Promise<string> {
         const checkCommand = process.platform === 'win32' ? 'where dynomark' : 'which dynomark';
         exec(checkCommand, (error: any, stdout: string, stderr: string) => {
             if (error) {
-                // Dynomark not found in PATH, check if we have a downloaded version
                 const dynomarkPath = path.join(__dirname, DYNOMARK_EXECUTABLE);
                 if (fs.existsSync(dynomarkPath)) {
                     resolve(dynomarkPath);
@@ -257,7 +232,6 @@ function downloadDynomark(): Promise<string> {
                         });
                     });
                 } else if (response.statusCode === 302 && response.headers.location) {
-                    // Follow the redirection
                     download(response.headers.location);
                 } else {
                     reject(`Failed to download Dynomark: ${response.statusCode}`);
@@ -269,6 +243,52 @@ function downloadDynomark(): Promise<string> {
 
         download(DYNOMARK_URL);
     });
+}
+
+function executeDynomarkCommand(dynomarkPath: string, query: string, currentFileDirectory: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const command = `${dynomarkPath} --query "${query}"`;
+        const childProcess = exec(command, { cwd: currentFileDirectory }, (error: any, stdout: string, stderr: string) => {
+            if (error) {
+                reject(`Error running command: ${error.message}`);
+                return;
+            }
+            if (stderr) {
+                console.warn(`stderr: ${stderr}`);
+            }
+            resolve(stdout.trim());
+        });
+
+        const timeout = setTimeout(() => {
+            childProcess.kill();
+            reject('Dynomark command timed out');
+        }, 10000);
+
+        childProcess.on('exit', () => clearTimeout(timeout));
+    });
+}
+
+async function retryDynomarkExecution(dynomarkPath: string, query: string, currentFileDirectory: string, maxRetries = 3): Promise<string> {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await executeDynomarkCommand(dynomarkPath, query, currentFileDirectory);
+        } catch (error) {
+            console.warn(`Dynomark execution failed (attempt ${i + 1}/${maxRetries}):`, error);
+            if (i === maxRetries - 1) {
+                throw error;
+            }
+        }
+    }
+    throw new Error('Max retries reached');
+}
+
+function escapeRegExp(string: string): string {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+}
+
+function createSafeBlockRegex(block: string): RegExp {
+    const escapedBlock = escapeRegExp(block);
+    return new RegExp(`\`\`\`dynomark\\r?\\n${escapedBlock}\\r?\\n\`\`\``, 'g');
 }
 
 export function deactivate() {}
